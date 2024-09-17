@@ -1,0 +1,141 @@
+import os
+import sys
+import time
+import subprocess
+import logging
+from collections import defaultdict
+from scapy.all import sniff, TCP, IP, ICMP
+from sklearn.ensemble import IsolationForest
+import numpy as np
+from graphviz import Digraph
+from threading import Thread
+
+def install_dependencies():
+    try:
+        from scapy.all import sniff
+    except ImportError:
+        print("Installing Scapy...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "scapy"])
+
+    try:
+        import sklearn
+    except ImportError:
+        print("Installing scikit-learn...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "scikit-learn"])
+
+    try:
+        import graphviz
+    except ImportError:
+        print("Installing Graphviz...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "graphviz"])
+
+install_dependencies()
+
+from scapy.all import sniff, TCP, IP, ICMP
+from sklearn.ensemble import IsolationForest
+from graphviz import Digraph
+
+connection_attempts = defaultdict(int)
+syn_packets = defaultdict(int)
+icmp_packets = defaultdict(int)
+traffic_data = []
+
+TIME_WINDOW = 60
+THRESHOLD_SYN = 50
+THRESHOLD_ICMP = 30
+THRESHOLD_CONNECTION = 10
+
+log_filename = f"ids_log_{time.strftime('%Y%m%d_%H%M%S')}.log"
+log_file = open(log_filename, "a")
+
+def log_event(event):
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = f"[{timestamp}] {event}\n"
+    log_file.write(log_entry)
+    print(log_entry)
+
+def detect_anomalies():
+    if len(traffic_data) < 50: 
+        return
+    clf = IsolationForest(contamination=0.05)
+    clf.fit(traffic_data)
+    predictions = clf.predict(traffic_data)
+    anomalies = np.where(predictions == -1)[0]
+    for i in anomalies:
+        event = f"Anomaly detected: {traffic_data[i]}"
+        log_event(event)
+
+def visualize_intrusions():
+    dot = Digraph(comment='Intrusion Detection System')
+    dot.node('A', 'IDS Monitoring')
+
+    for ip, count in connection_attempts.items():
+        dot.node(ip, f'{ip}\nConnections: {count}')
+        dot.edge('A', ip)
+
+    dot.render('intrusion_map.gv', view=True)
+
+def detect_syn_flood(packet):
+    if packet.haslayer(TCP) and packet[TCP].flags == "S":
+        source_ip = packet[IP].src
+        syn_packets[source_ip] += 1
+        if syn_packets[source_ip] > THRESHOLD_SYN:
+            event = f"SYN flood detected from {source_ip}."
+            log_event(event)
+            syn_packets[source_ip] = 0 
+
+def detect_icmp_flood(packet):
+    if packet.haslayer(ICMP):
+        source_ip = packet[IP].src
+        icmp_packets[source_ip] += 1
+        if icmp_packets[source_ip] > THRESHOLD_ICMP:
+            event = f"ICMP flood detected from {source_ip}."
+            log_event(event)
+            icmp_packets[source_ip] = 0 
+
+def detect_multiple_connection_attempts(packet):
+    if packet.haslayer(IP):
+        source_ip = packet[IP].src
+        connection_attempts[source_ip] += 1
+        if connection_attempts[source_ip] > THRESHOLD_CONNECTION:
+            event = f"Multiple connection attempts detected from {source_ip}."
+            log_event(event)
+            connection_attempts[source_ip] = 0 
+
+def collect_traffic_data(packet):
+    if packet.haslayer(IP):
+        traffic_data.append([packet[IP].len, packet[IP].ttl])
+
+def packet_sniffer(packet):
+    detect_syn_flood(packet)
+    detect_icmp_flood(packet)
+    detect_multiple_connection_attempts(packet)
+    collect_traffic_data(packet)
+    detect_anomalies() 
+
+def reset_counters():
+    while True:
+        time.sleep(TIME_WINDOW)
+        connection_attempts.clear()
+        syn_packets.clear()
+        icmp_packets.clear()
+
+def main():
+    print("Starting Intrusion Detection System (IDS)...")
+    log_event("IDS started, monitoring for intrusions...")
+
+    reset_thread = Thread(target=reset_counters)
+    reset_thread.daemon = True 
+    reset_thread.start()
+
+    sniff(filter="tcp or icmp or ip", prn=packet_sniffer)
+
+    visualize_intrusions()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopping IDS...")
+        log_event("IDS stopped.")
+        log_file.close()
